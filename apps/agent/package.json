@@ -1,0 +1,27 @@
+{
+  "name": "@sixteen/agent",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file=../../.env dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@sixteen/ai": "workspace:*",
+    "@sixteen/blockchain": "workspace:*",
+    "@sixteen/db": "workspace:*",
+    "@sixteen/shared": "workspace:*",
+    "openai": "^4.52.0",
+    "ethers": "^6.12.0",
+    "axios": "^1.7.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.11.0"
+  }
+}
