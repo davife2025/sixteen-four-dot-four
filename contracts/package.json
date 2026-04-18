@@ -1,0 +1,22 @@
+{
+  "name": "@sixteen/contracts",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "compile":        "hardhat compile",
+    "deploy:testnet": "hardhat run scripts/deploy.ts --network bscTestnet",
+    "verify":         "hardhat verify --network bscTestnet",
+    "test":           "hardhat test"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0"
+  },
+  "devDependencies": {
+    "hardhat": "^2.22.0",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "ts-node": "^10.9.0",
+    "dotenv": "^16.4.0"
+  }
+}

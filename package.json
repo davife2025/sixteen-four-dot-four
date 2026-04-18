@@ -8,15 +8,21 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "turbo run dev",
-    "build": "turbo run build",
-    "lint": "turbo run lint",
-    "type-check": "turbo run type-check",
-    "agent:start": "turbo run start --filter=@sixteen/agent",
-    "api:start": "turbo run start --filter=@sixteen/api",
-    "web:dev": "turbo run dev --filter=@sixteen/web",
-    "db:migrate": "pnpm --filter @sixteen/db migrate",
-    "db:generate": "pnpm --filter @sixteen/db generate"
+    "dev":            "turbo run dev",
+    "build":          "turbo run build",
+    "lint":           "turbo run lint",
+    "type-check":     "turbo run type-check",
+    "agent:start":    "tsx apps/agent/src/index.final.ts",
+    "agent:dev":      "tsx watch apps/agent/src/index.final.ts",
+    "api:start":      "tsx apps/api/src/index.ts",
+    "api:dev":        "tsx watch apps/api/src/index.ts",
+    "web:dev":        "pnpm --filter @sixteen/web dev",
+    "web:build":      "pnpm --filter @sixteen/web build",
+    "db:push":        "supabase db push",
+    "db:generate":    "supabase gen types typescript --local > packages/db/src/database.types.ts",
+    "deploy:testnet": "pnpm --filter contracts deploy:testnet",
+    "launch-check":   "tsx scripts/launch-check.ts",
+    "test":           "tsx tests/integration.ts"
   },
   "devDependencies": {
     "turbo": "^2.0.0",

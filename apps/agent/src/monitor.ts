@@ -1,0 +1,106 @@
+// ============================================================
+// SIXTEEN — apps/agent/src/monitor.ts
+// Agent monitoring — logs errors, tracks health, alerts on
+// consecutive failures so owner knows if an agent is stuck
+// ============================================================
+
+import { db, updateAgentStatus } from '@sixteen/db'
+
+// ── Error log table (written to Supabase) ─────────────────
+
+interface AgentError {
+  agent_id: string
+  error_type: string
+  message: string
+  context?: Record<string, unknown>
+}
+
+export async function logAgentError(err: AgentError): Promise<void> {
+  try {
+    await db()
+      .from('agent_errors')
+      .insert({
+        agent_id:   err.agent_id,
+        error_type: err.error_type,
+        message:    err.message,
+        context:    err.context ?? {},
+        created_at: new Date().toISOString(),
+      })
+  } catch {
+    // Don't let monitoring failures crash the agent
+    console.error('[monitor] Failed to log error to Supabase:', err.message)
+  }
+}
+
+// ── Consecutive failure tracker ───────────────────────────
+
+const failureCounts = new Map<string, number>()
+const MAX_CONSECUTIVE_FAILURES = 5
+
+export function recordSuccess(agentId: string): void {
+  failureCounts.set(agentId, 0)
+}
+
+export async function recordFailure(
+  agentId: string,
+  errorType: string,
+  message: string,
+  context?: Record<string, unknown>
+): Promise<void> {
+  const count = (failureCounts.get(agentId) ?? 0) + 1
+  failureCounts.set(agentId, count)
+
+  await logAgentError({ agent_id: agentId, error_type: errorType, message, context })
+
+  if (count >= MAX_CONSECUTIVE_FAILURES) {
+    console.error(`[monitor] Agent ${agentId} has failed ${count} times consecutively — pausing`)
+    await updateAgentStatus(agentId, 'error')
+    failureCounts.set(agentId, 0)
+  }
+}
+
+// ── Health check: verify Kimi K2 + Supabase + BNB RPC ────
+
+export async function runHealthCheck(): Promise<{
+  kimiK2: boolean
+  supabase: boolean
+  bnbRpc: boolean
+}> {
+  const results = { kimiK2: false, supabase: false, bnbRpc: false }
+
+  // Check Kimi K2
+  try {
+    const { getKimiClient, KIMI_MODEL } = await import('@sixteen/ai')
+    const client = getKimiClient()
+    await client.chat.completions.create({
+      model: KIMI_MODEL,
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 5,
+    })
+    results.kimiK2 = true
+  } catch (err) {
+    console.error('[monitor] Kimi K2 health check failed:', err)
+  }
+
+  // Check Supabase
+  try {
+    const { db } = await import('@sixteen/db')
+    await db().from('agents').select('id').limit(1)
+    results.supabase = true
+  } catch (err) {
+    console.error('[monitor] Supabase health check failed:', err)
+  }
+
+  // Check BNB RPC
+  try {
+    const { getProvider } = await import('@sixteen/blockchain')
+    const provider = getProvider()
+    await provider.getBlockNumber()
+    results.bnbRpc = true
+  } catch (err) {
+    console.error('[monitor] BNB RPC health check failed:', err)
+  }
+
+  console.log(`[monitor] Health: Kimi K2=${results.kimiK2} Supabase=${results.supabase} BNB=${results.bnbRpc}`)
+  return results
+}
