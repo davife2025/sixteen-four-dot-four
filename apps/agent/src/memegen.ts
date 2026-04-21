@@ -1,162 +1,250 @@
 // ============================================================
 // SIXTEEN — apps/agent/src/memegen.ts
-// AI meme generation pipeline
-//   Static memes : Supermeme.ai API
-//   Video memes  : Kling 2.6 via ModelsLab unified API
+// AI meme generation for the agent pipeline
+//
+// Pipeline:
+//   1. Kimi K2 rewrites concept into optimised image prompt
+//   2. HuggingFace FLUX.1-schnell generates the image (binary)
+//      Fallback → Pollinations.ai (URL-based, no key needed)
+//   3. uploadMemeToFourMeme uploads buffer to four.meme CDN
+//   4. For video: ModelsLab Kling 2.6
 // ============================================================
 
 import axios from 'axios'
+import { kimiChat } from '@sixteen/ai'
 import { uploadMemeImage } from '@sixteen/blockchain'
+import type { ChatCompletionMessageParam } from 'openai/resources/chat'
 
-// ── Static meme generation — Supermeme.ai ─────────────────
+const HF_BASE  = 'https://api-inference.huggingface.co/models'
+const HF_MODEL = 'black-forest-labs/FLUX.1-schnell'
+const HF_FALLBACK = 'stabilityai/stable-diffusion-xl-base-1.0'
 
-export interface GeneratedMeme {
-  imageUrl: string        // URL returned by Supermeme.ai
-  caption: string
-  templateName: string
-}
+// ── Kimi K2: enhance the image generation prompt ──────────
 
-export async function generateStaticMeme(
-  concept: string,
-  count = 3
-): Promise<GeneratedMeme[]> {
-  const apiKey = process.env['SUPERMEME_API_KEY']
-  if (!apiKey) throw new Error('Missing SUPERMEME_API_KEY')
-
-  const res = await axios.post(
-    'https://supermeme.ai/api/meme',
-    {
-      text: concept,
-      count,
-      aspect_ratio: '1:1',
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+export async function enhancePromptWithKimi(concept: string): Promise<string> {
+  try {
+    const messages: ChatCompletionMessageParam[] = [
+      {
+        role: 'system',
+        content: `You are an expert AI image generation prompt engineer specialising in internet meme culture and BNB Chain crypto.
+Given a meme concept, rewrite it as a detailed, vivid prompt for Flux AI image generation.
+Output ONLY the enhanced prompt — no labels, no explanation, no quotes.
+Max 80 words. Include art style, key visual elements, mood, lighting.
+Make it funny, viral, crypto-culture relevant. Do NOT include any text overlays or words in the image.`,
       },
+      { role: 'user', content: concept },
+    ]
+    const response = await kimiChat({ messages, temperature: 0.85, maxTokens: 120 })
+    const enhanced = response.content.trim()
+    return enhanced.length > 8 ? enhanced : concept
+  } catch {
+    return concept
+  }
+}
+
+// ── HuggingFace FLUX: real AI image generation ────────────
+
+async function generateWithHF(prompt: string, model: string): Promise<Buffer | null> {
+  const hfToken = process.env['HF_TOKEN']
+  if (!hfToken) return null
+
+  try {
+    const res = await axios.post(
+      `${HF_BASE}/${model}`,
+      {
+        inputs: `${prompt}, meme style, internet culture, funny, viral, high quality`,
+        parameters: {
+          num_inference_steps: 4,
+          guidance_scale:      0,
+          width:               512,
+          height:              512,
+        },
+        options: { wait_for_model: true, use_cache: false },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${hfToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'image/jpeg,image/png,image/*',
+        },
+        responseType: 'arraybuffer',
+        timeout:      45000,
+      }
+    )
+
+    const contentType = res.headers['content-type'] as string ?? ''
+    if (!contentType.includes('image')) {
+      console.warn(`[memegen] HF returned non-image content-type: ${contentType}`)
+      return null
     }
-  )
 
-  const memes = (res.data as {
-    memes: Array<{ url: string; caption: string; template_name: string }>
-  }).memes ?? []
-
-  return memes.map((m) => ({
-    imageUrl: m.url,
-    caption: m.caption,
-    templateName: m.template_name,
-  }))
+    return Buffer.from(res.data as ArrayBuffer)
+  } catch (err: any) {
+    console.warn(`[memegen] HF ${model} failed:`, err?.response?.status ?? err?.message)
+    return null
+  }
 }
 
-// ── Pick best meme from generated options ─────────────────
-// Returns the first result — in Session 3 Kimi K2 will score each option
+// ── Pollinations: URL-based fallback (no key needed) ──────
 
-export async function getBestStaticMeme(concept: string): Promise<GeneratedMeme> {
-  const memes = await generateStaticMeme(concept, 3)
-  if (!memes[0]) throw new Error('Supermeme.ai returned no memes')
-  return memes[0]
+function buildPollinationsUrl(prompt: string): string {
+  const enriched = `${prompt}, meme style, funny, viral, crypto culture, high quality digital art`
+  const seed     = Math.floor(Math.random() * 999999)
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(enriched)}?width=512&height=512&model=flux&nologo=true&seed=${seed}`
 }
 
-// ── Download image from URL into Buffer ───────────────────
+// ── Download any image URL to a Buffer ────────────────────
 
 export async function downloadImageAsBuffer(url: string): Promise<Buffer> {
-  const res = await axios.get(url, { responseType: 'arraybuffer' })
-  return Buffer.from(res.data as ArrayBuffer)
+  const res = await axios.get<ArrayBuffer>(url, {
+    responseType: 'arraybuffer',
+    timeout:      30000,
+    headers:      { 'User-Agent': 'Sixteen-Agent/1.0' },
+  })
+  return Buffer.from(res.data)
 }
 
-// ── Upload meme image to four.meme ────────────────────────
-// Returns the four.meme hosted image URL needed for token creation
+// ── Main: generate the best static meme ───────────────────
 
-export async function uploadMemeToFourMeme(imageUrl: string): Promise<string> {
-  const buffer = await downloadImageAsBuffer(imageUrl)
-  const fourMemeUrl = await uploadMemeImage(buffer, 'image/jpeg')
-  return fourMemeUrl
+export interface GeneratedMeme {
+  imageUrl:        string   // URL or data (for uploading)
+  imageBuffer?:    Buffer   // binary if available
+  enhancedPrompt:  string
+  originalConcept: string
+  source:          'hf-flux' | 'hf-sdxl' | 'pollinations'
 }
 
-// ── Video meme generation — Kling 2.6 via ModelsLab ───────
+export async function getBestStaticMeme(concept: string): Promise<GeneratedMeme> {
+  console.log(`[memegen] Enhancing prompt with Kimi K2…`)
+  const enhanced = await enhancePromptWithKimi(concept)
+  console.log(`[memegen] Enhanced: "${enhanced.slice(0, 60)}…"`)
+
+  // Try HF FLUX first (best quality, uses same HF_TOKEN)
+  console.log('[memegen] Generating image with HF FLUX.1-schnell…')
+  let buffer = await generateWithHF(enhanced, HF_MODEL)
+
+  if (buffer) {
+    console.log(`[memegen] HF FLUX success — ${buffer.length} bytes`)
+    return {
+      imageUrl:        `data:image/jpeg;base64,${buffer.toString('base64')}`,
+      imageBuffer:     buffer,
+      enhancedPrompt:  enhanced,
+      originalConcept: concept,
+      source:          'hf-flux',
+    }
+  }
+
+  // Fallback to SDXL
+  console.log('[memegen] FLUX unavailable — trying SDXL fallback…')
+  buffer = await generateWithHF(enhanced, HF_FALLBACK)
+
+  if (buffer) {
+    console.log(`[memegen] SDXL success — ${buffer.length} bytes`)
+    return {
+      imageUrl:        `data:image/jpeg;base64,${buffer.toString('base64')}`,
+      imageBuffer:     buffer,
+      enhancedPrompt:  enhanced,
+      originalConcept: concept,
+      source:          'hf-sdxl',
+    }
+  }
+
+  // Final fallback: Pollinations URL
+  console.log('[memegen] HF unavailable — using Pollinations URL fallback')
+  const pollinationsUrl = buildPollinationsUrl(enhanced)
+  return {
+    imageUrl:        pollinationsUrl,
+    enhancedPrompt:  enhanced,
+    originalConcept: concept,
+    source:          'pollinations',
+  }
+}
+
+// ── Upload meme to four.meme CDN ──────────────────────────
+
+export async function uploadMemeToFourMeme(imageUrlOrData: string, imageBuffer?: Buffer): Promise<string> {
+  try {
+    let buffer: Buffer
+
+    if (imageBuffer) {
+      // Already have the buffer (from HF)
+      buffer = imageBuffer
+    } else if (imageUrlOrData.startsWith('data:')) {
+      // Base64 data URL
+      const base64 = imageUrlOrData.split(',')[1]
+      buffer = Buffer.from(base64 ?? '', 'base64')
+    } else {
+      // Download from URL (Pollinations fallback)
+      console.log('[memegen] Downloading image from URL…')
+      buffer = await downloadImageAsBuffer(imageUrlOrData)
+    }
+
+    const cdnUrl = await uploadMemeImage(buffer, 'image/jpeg')
+    console.log(`[memegen] Uploaded to four.meme CDN: ${cdnUrl}`)
+    return cdnUrl
+  } catch (err) {
+    console.warn('[memegen] Upload failed, using source URL directly:', err)
+    // If upload fails and we have a direct URL, return it
+    if (!imageUrlOrData.startsWith('data:')) return imageUrlOrData
+    throw new Error('Image upload failed and no fallback URL available')
+  }
+}
+
+// ── Video generation via Kling 2.6 ───────────────────────
 
 export interface GeneratedVideo {
-  videoUrl: string
+  videoUrl:     string | null
   thumbnailUrl: string
-  prompt: string
-  durationSecs: number
+  jobId?:       number
+  status:       'done' | 'processing' | 'failed'
 }
 
-export async function generateVideoMeme(
-  prompt: string,
-  durationSecs = 5
-): Promise<GeneratedVideo> {
+export async function generateVideoMeme(concept: string): Promise<GeneratedVideo> {
   const apiKey = process.env['MODELSLAB_API_KEY']
-  if (!apiKey) throw new Error('Missing MODELSLAB_API_KEY')
 
-  // Step 1: Submit video generation job to Kling 2.6
-  const submitRes = await axios.post(
-    'https://modelslab.com/api/v6/video/text2video',
-    {
-      key: apiKey,
-      model_id: 'kling-v2-6',          // Kling 2.6 model
-      prompt,
-      negative_prompt: 'low quality, blurry, watermark, text overlay',
-      num_frames: durationSecs * 24,    // 24fps
-      width: 720,
-      height: 720,
-      num_inference_steps: 30,
-      guidance_scale: 7.5,
-      webhook: null,
-      track_id: null,
-    },
-    { headers: { 'Content-Type': 'application/json' } }
+  const enhanced = await enhancePromptWithKimi(
+    `${concept}, animated video meme, looping, funny, viral`
   )
 
-  const jobData = submitRes.data as {
-    status: string
-    id: string
-    output?: string[]
-    eta?: number
+  if (!apiKey) {
+    console.warn('[memegen] No MODELSLAB_API_KEY — generating static image instead of video')
+    const pollinationsUrl = buildPollinationsUrl(enhanced)
+    return { videoUrl: null, thumbnailUrl: pollinationsUrl, status: 'failed' }
   }
 
-  if (jobData.status === 'error') {
-    throw new Error(`ModelsLab video generation failed: ${JSON.stringify(jobData)}`)
-  }
-
-  // Step 2: Poll for completion (Kling takes 5-10 minutes)
-  const jobId = jobData.id
-  let videoUrl = jobData.output?.[0] ?? null
-  let attempts = 0
-  const maxAttempts = 60  // poll for up to 5 minutes (every 5s)
-
-  while (!videoUrl && attempts < maxAttempts) {
-    await sleep(5000)
-    const statusRes = await axios.post(
-      'https://modelslab.com/api/v6/video/fetch',
-      { key: apiKey, request_id: jobId },
-      { headers: { 'Content-Type': 'application/json' } }
+  try {
+    const res = await axios.post(
+      'https://modelslab.com/api/v6/video/kling',
+      {
+        key:             apiKey,
+        prompt:          enhanced,
+        negative_prompt: 'blurry, low quality, watermark, nsfw',
+        duration:        5,
+        aspect_ratio:    '1:1',
+        mode:            'std',
+        webhook:         null,
+        track_id:        null,
+      },
+      { timeout: 30000 }
     )
-    const statusData = statusRes.data as { status: string; output?: string[] }
-    if (statusData.status === 'success' && statusData.output?.[0]) {
-      videoUrl = statusData.output[0]
+
+    const data = res.data as { status: string; id?: number; output?: string[]; eta?: number }
+
+    if (data.status === 'success' && data.output?.[0]) {
+      return { videoUrl: data.output[0], thumbnailUrl: data.output[0], status: 'done' }
     }
-    attempts++
-  }
 
-  if (!videoUrl) throw new Error('Video generation timed out after 5 minutes')
+    if (data.status === 'processing' && data.id) {
+      const thumbUrl = buildPollinationsUrl(enhanced)
+      return { videoUrl: null, thumbnailUrl: thumbUrl, jobId: data.id, status: 'processing' }
+    }
 
-  // Step 3: Extract thumbnail (first frame) from video URL
-  // In production, use ffmpeg or a frame extraction service
-  // For now, use ModelsLab's thumbnail endpoint
-  const thumbnailUrl = videoUrl.replace('.mp4', '_thumb.jpg')
-
-  return {
-    videoUrl,
-    thumbnailUrl,
-    prompt,
-    durationSecs,
+    throw new Error('Unexpected response from Kling')
+  } catch (err) {
+    console.warn('[memegen] Kling video failed:', err)
+    const thumbUrl = buildPollinationsUrl(enhanced)
+    return { videoUrl: null, thumbnailUrl: thumbUrl, status: 'failed' }
   }
 }
 
-// ── Helper ────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
+export { buildPollinationsUrl }

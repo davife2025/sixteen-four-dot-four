@@ -1,136 +1,98 @@
 'use client'
-// ============================================================
-// SIXTEEN — apps/web/src/components/feed/TokenCard.tsx
-// Meme token card — handles both image and video tokens
-// Shows bonding curve, virality score, phase badge
-// ============================================================
-
-import Image from 'next/image'
 import Link from 'next/link'
 
 interface Token {
-  id: string
-  token_address: string
-  name: string
-  symbol: string
-  description: string
-  image_url: string
-  video_url: string | null
-  asset_type: 'image' | 'video'
-  label: string
-  phase: string
-  bonding_curve_pct: number
-  virality_score: number
-  sixteen_score: number
-  created_at: string
-  agents?: { name: string; type: string } | null
-}
-
-const PHASE_STYLES: Record<string, string> = {
-  insider:   'badge-purple',
-  public:    'badge-teal',
-  graduated: 'badge-amber',
-}
-
-const PHASE_LABELS: Record<string, string> = {
-  insider:   '🔒 Insider',
-  public:    '🌐 Public',
-  graduated: '🎓 Graduated',
+  id: string; token_address: string; name: string; symbol: string
+  description: string; image_url: string; video_url?: string | null
+  asset_type: 'image'|'video'; label: string; phase: string
+  bonding_curve_pct: number; virality_score: number; sixteen_score: number
+  created_at: string; agents?: { name: string; type: string } | null
 }
 
 export function TokenCard({ token }: { token: Token }) {
-  const timeAgo = getTimeAgo(token.created_at)
+  const score = token.sixteen_score ?? 0
+  const curve = token.bonding_curve_pct ?? 0
+  const isAI  = !!token.agents
+
+  const phaseColor: Record<string,string> = {
+    insider: 'var(--yellow)', public: 'var(--green)',
+    graduated: 'var(--t0)', pending: 'var(--t3)',
+  }
 
   return (
-    <Link href={`/token/${token.token_address}`}>
-      <div className="card-hover overflow-hidden group">
-        {/* Media */}
-        <div className="relative aspect-square bg-gray-800 overflow-hidden">
-          {token.asset_type === 'video' && token.video_url ? (
-            <video
-              src={token.video_url}
-              poster={token.image_url}
-              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-              autoPlay
-              loop
-              muted
-              playsInline
-            />
+    <Link href={`/token/${token.token_address}`} style={{ display: 'block' }}>
+      <div
+        className="card2"
+        style={{ overflow: 'hidden', transition: 'border-color 0.15s, transform 0.15s', cursor: 'pointer' }}
+        onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(185,241,74,0.3)'; el.style.transform = 'translateY(-2px)' }}
+        onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'var(--s3)'; el.style.transform = 'translateY(0)' }}
+      >
+        {/* Image */}
+        <div style={{ height: 160, background: 'var(--s1)', position: 'relative', overflow: 'hidden' }}>
+          {token.image_url ? (
+            <img src={token.image_url} alt={token.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
           ) : (
-            <Image
-              src={token.image_url}
-              alt={token.name}
-              fill
-              className="object-cover group-hover:scale-105 transition-transform duration-300"
-              sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
-            />
+            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 36, opacity: 0.3 }}>🐸</div>
           )}
+
+          {/* Score */}
+          <div style={{ position: 'absolute', top: 8, left: 8, background: 'rgba(0,0,0,0.75)', borderRadius: 5, padding: '2px 7px', fontFamily: 'Space Mono, monospace', fontSize: 11, fontWeight: 700, color: score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--t2)' }}>
+            {score.toFixed(0)}
+          </div>
 
           {/* Video badge */}
           {token.asset_type === 'video' && (
-            <span className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-0.5 rounded-full backdrop-blur-sm">
-              ▶ Video
-            </span>
+            <div style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.75)', borderRadius: 5, padding: '2px 7px', fontSize: 9, fontWeight: 700, color: 'var(--yellow)', letterSpacing: '0.06em' }}>
+              VIDEO
+            </div>
           )}
 
-          {/* Sixteen score */}
-          <span className="absolute top-2 right-2 bg-black/60 backdrop-blur-sm text-white text-xs font-bold px-2 py-0.5 rounded-full">
-            ★ {Math.round(token.sixteen_score)}
-          </span>
+          {/* AI / Human badge */}
+          <div style={{ position: 'absolute', bottom: 8, right: 8, background: 'rgba(0,0,0,0.72)', borderRadius: 4, padding: '2px 6px', fontSize: 9, fontWeight: 700, color: isAI ? 'var(--green)' : 'var(--yellow)' }}>
+            {isAI ? 'AI' : 'Human'}
+          </div>
         </div>
 
-        {/* Info */}
-        <div className="p-3 space-y-2">
-          {/* Name + phase */}
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="font-semibold text-white text-sm truncate">{token.name}</div>
-              <div className="text-xs text-gray-500">${token.symbol}</div>
+        {/* Body */}
+        <div style={{ padding: '12px 14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 6 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontWeight: 700, color: 'var(--t0)', fontSize: 14, lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {token.name}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--t3)', fontFamily: 'Space Mono, monospace', marginTop: 1 }}>
+                {token.symbol}
+              </div>
             </div>
-            <span className={PHASE_STYLES[token.phase] ?? 'badge-purple'}>
-              {PHASE_LABELS[token.phase] ?? token.phase}
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 100, marginLeft: 8, flexShrink: 0, color: phaseColor[token.phase] ?? 'var(--t3)', background: `${phaseColor[token.phase] ?? 'var(--s3)'}18`, border: `1px solid ${phaseColor[token.phase] ?? 'var(--s3)'}30` }}>
+              {token.phase}
             </span>
           </div>
 
           {/* Description */}
-          <p className="text-xs text-gray-400 line-clamp-2">{token.description}</p>
+          <p style={{ fontSize: 11, color: 'var(--t2)', lineHeight: 1.5, marginBottom: 10, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {token.description}
+          </p>
 
-          {/* Bonding curve */}
-          <div className="space-y-1">
-            <div className="flex justify-between text-xs">
-              <span className="text-gray-500">Bonding curve</span>
-              <span className="text-gray-300">{token.bonding_curve_pct.toFixed(1)}%</span>
+          {/* Progress bar */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ fontSize: 9, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Bonding Curve</span>
+              <span style={{ fontSize: 10, fontFamily: 'Space Mono, monospace', color: curve > 80 ? 'var(--yellow)' : 'var(--green)' }}>{curve.toFixed(1)}%</span>
             </div>
-            <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-brand-teal to-brand-purple rounded-full transition-all"
-                style={{ width: `${Math.min(token.bonding_curve_pct, 100)}%` }}
-              />
+            <div className="prog-bar">
+              <div className="prog-fill" style={{ width: `${curve}%` }} />
             </div>
           </div>
 
-          {/* Meta row */}
-          <div className="flex items-center justify-between text-xs text-gray-600 pt-1 border-t border-gray-800">
-            <span className="flex items-center gap-1">
-              <span className="text-gray-500">🤖</span>
-              <span className="truncate max-w-[80px]">
-                {token.agents?.name ?? 'Agent'}
-              </span>
-            </span>
-            <span>{timeAgo}</span>
+          {/* Footer */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--t3)' }}>{token.agents?.name ?? 'Community'}</span>
+            <span style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'Space Mono, monospace' }}>{token.virality_score ?? 0} vrl</span>
           </div>
         </div>
       </div>
     </Link>
   )
-}
-
-function getTimeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.floor(hours / 24)}d ago`
 }

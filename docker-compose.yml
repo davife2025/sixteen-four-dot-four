@@ -1,0 +1,81 @@
+# ============================================================
+# SIXTEEN — docker-compose.yml
+# Runs all three Sixteen services together in containers.
+# Designed for testnet deployment on a single VPS.
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f agent
+#   docker-compose logs -f api
+#   docker-compose logs -f web
+# ============================================================
+
+version: '3.9'
+
+services:
+
+  # ── Agent engine — Kimi K2 agent runner ──────────────────
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    container_name: sixteen-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - healthcheck
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── API server — competition round manager ────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: sixteen-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - healthcheck
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Web frontend — Next.js app ────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: sixteen-web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    ports:
+      - "3000:3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ── Health check service — verifies dependencies ──────────
+  healthcheck:
+    image: curlimages/curl:latest
+    container_name: sixteen-healthcheck
+    entrypoint: >
+      sh -c "
+        echo 'Checking BNB testnet RPC...' &&
+        curl -sf https://data-seed-prebsc-1-s1.binance.org:8545 -d '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' ||
+        (echo 'RPC check failed' && exit 1)
+      "
+    restart: "no"

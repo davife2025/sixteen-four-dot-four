@@ -1,39 +1,17 @@
 'use client'
-// ============================================================
-// SIXTEEN — apps/web/src/app/logs/page.tsx
-// Live agent activity log — shows every Kimi K2 decision
-// in real time via Supabase Realtime subscription
-// ============================================================
-
 import { useEffect, useState } from 'react'
 import { createBrowserClient } from '@/lib/supabase'
 
 interface LogRow {
-  id: string
-  action: string
-  token_address: string | null
-  reasoning: string | null
-  virality_score: number | null
-  amount_bnb: number | null
-  outcome: string
-  created_at: string
+  id: string; action: string; token_address: string | null
+  reasoning: string | null; virality_score: number | null
+  amount_bnb: number | null; outcome: string; created_at: string
   agents: { name: string; type: string } | null
 }
 
-const ACTION_COLORS: Record<string, string> = {
-  create:   'text-purple-400 bg-purple-400/10',
-  buy:      'text-green-400 bg-green-400/10',
-  sell:     'text-red-400 bg-red-400/10',
-  skip:     'text-gray-400 bg-gray-400/10',
-  register: 'text-teal-400 bg-teal-400/10',
-  claim:    'text-amber-400 bg-amber-400/10',
-  error:    'text-red-500 bg-red-500/10',
-}
-
-const OUTCOME_ICONS: Record<string, string> = {
-  success: '✓',
-  failed:  '✗',
-  skipped: '–',
+const ACTION_COLOR: Record<string,string> = {
+  create: 'var(--green)', buy: 'var(--green)', sell: 'var(--yellow)',
+  skip: 'var(--t3)', error: '#ff6060', register: 'var(--green)', claim: 'var(--yellow)',
 }
 
 export default function LogsPage() {
@@ -41,111 +19,75 @@ export default function LogsPage() {
 
   useEffect(() => {
     const supabase = createBrowserClient()
-
-    // Initial load
-    async function loadLogs() {
+    async function load() {
       const { data } = await supabase
         .from('agent_logs')
-        .select(`
-          id, action, token_address, reasoning,
-          virality_score, amount_bnb, outcome, created_at,
-          agents ( name, type )
-        `)
+        .select('id, action, token_address, reasoning, virality_score, amount_bnb, outcome, created_at, agents(name,type)')
         .order('created_at', { ascending: false })
         .limit(100)
       setLogs((data ?? []) as LogRow[])
     }
-    void loadLogs()
-
-    // Realtime subscription
-    const channel = supabase
-      .channel('logs-live')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'agent_logs' },
-        (payload) => {
-          setLogs((prev) => [payload.new as LogRow, ...prev].slice(0, 100))
-        }
-      )
-      .subscribe()
-
-    return () => { void supabase.removeChannel(channel) }
+    void load()
+    const ch = supabase.channel('logs')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'agent_logs' }, p => {
+        setLogs(prev => [p.new as LogRow, ...prev].slice(0, 100))
+      }).subscribe()
+    return () => { void supabase.removeChannel(ch) }
   }, [])
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="page-wrap">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <div>
-          <h1 className="text-2xl font-bold text-white">Agent Activity Log</h1>
-          <p className="text-gray-400 mt-1">
-            Every Kimi K2 decision — live. Full transparency on what agents are doing and why.
-          </p>
+          <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: 'var(--t0)', marginBottom: 4 }}>Agent Logs</h1>
+          <p style={{ fontSize: 13, color: 'var(--t2)' }}>Every Kimi K2 decision — live and transparent</p>
         </div>
-        <div className="flex items-center gap-2 text-sm text-green-400">
-          <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-          Live
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div className="live-dot" />
+          <span style={{ fontSize: 12, color: 'var(--green)', fontWeight: 600 }}>Live</span>
         </div>
       </div>
 
-      {/* Log table */}
-      <div className="rounded-2xl border border-gray-800 overflow-hidden">
-        <div className="grid grid-cols-[auto_auto_auto_1fr_auto_auto] gap-0 text-xs text-gray-500 uppercase tracking-wide px-4 py-2 border-b border-gray-800 bg-gray-900/50">
-          <span className="w-20">Time</span>
-          <span className="w-24 ml-3">Agent</span>
-          <span className="w-16 ml-3">Action</span>
-          <span className="ml-3">Reasoning</span>
-          <span className="w-16 ml-3 text-right">Amount</span>
-          <span className="w-12 ml-3 text-right">Result</span>
+      <div className="card">
+        {/* Header row */}
+        <div style={{ display: 'grid', gridTemplateColumns: '80px 100px 70px 1fr 90px 60px',
+          padding: '10px 16px', borderBottom: '1px solid var(--s3)' }}>
+          {['Time','Agent','Action','Reasoning','Amount','Result'].map(h => (
+            <span key={h} style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase',
+              letterSpacing: '0.1em', color: 'var(--t3)' }}>{h}</span>
+          ))}
         </div>
 
         {logs.length === 0 && (
-          <div className="text-center py-16 text-gray-500">
-            <p>No agent activity yet.</p>
-            <p className="text-sm mt-1">Start an agent to see decisions appear here in real time.</p>
+          <div style={{ padding: '48px', textAlign: 'center', color: 'var(--t3)', fontSize: 13 }}>
+            No agent activity yet. Start an agent to see decisions appear here in real time.
           </div>
         )}
 
-        {logs.map((log) => (
-          <div
-            key={log.id}
-            className="grid grid-cols-[auto_auto_auto_1fr_auto_auto] gap-0 items-center px-4 py-3 border-b border-gray-800/50 last:border-0 hover:bg-gray-800/30 transition-colors text-sm"
-          >
-            {/* Time */}
-            <span className="w-20 text-gray-600 text-xs font-mono">
+        {logs.map(log => (
+          <div key={log.id} style={{ display: 'grid', gridTemplateColumns: '80px 100px 70px 1fr 90px 60px',
+            padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.03)',
+            alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'Space Mono, monospace' }}>
               {new Date(log.created_at).toLocaleTimeString()}
             </span>
-
-            {/* Agent name */}
-            <span className="w-24 ml-3 text-gray-300 truncate">
+            <span style={{ fontSize: 12, color: 'var(--t1)', fontWeight: 500, overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {log.agents?.name ?? '—'}
             </span>
-
-            {/* Action badge */}
-            <span className={`w-16 ml-3 text-xs px-2 py-0.5 rounded-full font-medium text-center ${ACTION_COLORS[log.action] ?? ''}`}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: ACTION_COLOR[log.action] ?? 'var(--t2)',
+              fontFamily: 'Space Mono, monospace' }}>
               {log.action}
             </span>
-
-            {/* Reasoning */}
-            <span className="ml-3 text-gray-400 text-xs truncate">
-              {log.reasoning ?? (log.token_address ? `Token: ${log.token_address.slice(0, 12)}…` : '—')}
-              {log.virality_score != null && (
-                <span className="ml-2 text-gray-600">score: {log.virality_score}</span>
-              )}
+            <span style={{ fontSize: 11, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', paddingRight: 12 }}>
+              {log.reasoning ?? (log.token_address ? log.token_address.slice(0,14)+'…' : '—')}
             </span>
-
-            {/* Amount */}
-            <span className="w-16 ml-3 text-right font-mono text-xs text-gray-400">
+            <span style={{ fontSize: 11, fontFamily: 'Space Mono, monospace', color: 'var(--t2)' }}>
               {log.amount_bnb != null ? `${log.amount_bnb.toFixed(3)} BNB` : '—'}
             </span>
-
-            {/* Outcome */}
-            <span className={`w-12 ml-3 text-right font-bold ${
-              log.outcome === 'success' ? 'text-green-400'
-              : log.outcome === 'failed' ? 'text-red-400'
-              : 'text-gray-500'
-            }`}>
-              {OUTCOME_ICONS[log.outcome] ?? '?'}
+            <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'Space Mono, monospace',
+              color: log.outcome === 'success' ? 'var(--green)' : log.outcome === 'failed' ? '#ff6060' : 'var(--t3)' }}>
+              {log.outcome === 'success' ? 'ok' : log.outcome === 'failed' ? 'fail' : '—'}
             </span>
           </div>
         ))}

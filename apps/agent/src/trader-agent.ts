@@ -1,106 +1,96 @@
 // ============================================================
 // SIXTEEN — apps/agent/src/trader-agent.ts
-// Trader Agent — reads the event stream, evaluates tokens,
-// enters in Insider Phase, exits at profit target
-// Powered by Kimi K2 decision making
+// Trader Agent — reads four.meme event stream, buys early,
+// exits at profit target. Kimi K2 decides every trade.
+//
+// Cycle:
+//   1. Fetch last 50 blocks of TokenCreate events
+//   2. Screen each new token (version, bonding %, creator tax)
+//   3. Kimi K2 decides: buy yes/no and how much
+//   4. quoteBuy → buyToken → record position
+//   5. Check all open positions: quoteSell → exit if ±target
+//   6. On profit exit: sendBnb to owner wallet
 // ============================================================
 
+import { kimiChat, TRADER_AGENT_SYSTEM_PROMPT, FOURMEME_TOOLS } from '@sixteen/ai'
 import {
-  kimiChat,
-  TRADER_AGENT_SYSTEM_PROMPT,
-  FOURMEME_TOOLS,
-} from '@sixteen/ai'
-import {
-  getTokenInfo,
-  quoteBuy,
-  buyToken,
-  quoteSell,
-  sellToken,
-  getTaxInfo,
-  sendBnb,
-  getRecentEvents,
-  getAgentWalletAddress,
-  registerAgentIdentity,
-  getAgentIdentityBalance,
+  getTokenInfo, quoteBuy, buyToken, quoteSell, sellToken,
+  getTaxInfo, sendBnb, getRecentEvents,
+  registerAgentIdentity, getAgentIdentityBalance, getProvider,
 } from '@sixteen/blockchain'
 import {
-  recordTrade,
-  recordPnl,
-  updateAgentStatus,
-  getAgentById,
-  upsertLeaderboard,
+  recordTrade, recordPnl, updateAgentStatus, getAgentById, upsertLeaderboard,
 } from '@sixteen/db'
-import { ethers } from 'ethers'
+import {
+  logAgentAction, logTradeExecuted, logProfitSent,
+} from './logger'
+import { recordSuccess, recordFailure } from './monitor'
+import { ethers }                        from 'ethers'
 import type { ChatCompletionMessageParam } from 'openai/resources/chat'
 
-// ── Trading limits ────────────────────────────────────────
-const MAX_POSITION_BNB = 0.2       // max 0.2 BNB per token
-const MAX_OPEN_POSITIONS = 5       // max 5 simultaneous positions
-const PROFIT_TARGET_PCT = 30       // exit at +30% gain
-const STOP_LOSS_PCT = 15           // exit at -15% loss
-const MIN_VIRALITY_SCORE = 65      // only trade tokens with score >= 65
-const MAX_BONDING_CURVE_PCT = 40   // only buy below 40% filled
+const MAX_POSITION_BNB   = 0.2
+const MAX_OPEN_POSITIONS = 5
+const PROFIT_TARGET_PCT  = 30
+const STOP_LOSS_PCT      = 15
 
-// ── Open position tracking (in-memory, Supabase persists) ─
 interface Position {
-  tokenAddress: string
-  entryFundsBnb: number
-  tokenAmountWei: string
-  entryTradeId: string
-  entryTimestamp: number
+  tokenAddress:    string
+  entryFundsBnb:   number
+  tokenAmountWei:  string
+  entryTradeId:    string
+  entryTimestamp:  number
 }
 
 const openPositions = new Map<string, Position>()
 
-// ── Trader agent main loop ────────────────────────────────
+// ── Main loop ─────────────────────────────────────────────
 
 export async function runTraderAgent(agentId: string): Promise<void> {
   const agent = await getAgentById(agentId)
-  console.log(`[trader] Starting agent: ${agent.name} (${agent.wallet_address})`)
+  console.log(`[trader:${agent.name}] Starting cycle`)
 
   await ensureAgentIdentity(agentId, agent.name, agent.wallet_address)
   await updateAgentStatus(agentId, 'running')
 
   try {
-    // Step 1: Get recent events from four.meme event stream
-    const provider = (await import('@sixteen/blockchain')).getProvider()
+    // 1. Fetch recent events
+    const provider     = getProvider()
     const currentBlock = await provider.getBlockNumber()
-    const fromBlock = currentBlock - 50  // last ~50 blocks (~2.5 mins on BSC)
+    const fromBlock    = currentBlock - 50
+    const events       = await getRecentEvents(fromBlock, currentBlock)
+    const newTokens    = events.filter(e => e.type === 'TokenCreate')
+    console.log(`[trader:${agent.name}] ${newTokens.length} new tokens, ${openPositions.size} open positions`)
 
-    console.log(`[trader] Fetching events from block ${fromBlock}...`)
-    const events = await getRecentEvents(fromBlock, currentBlock)
-
-    const newTokens = events.filter((e) => e.type === 'TokenCreate')
-    console.log(`[trader] Found ${newTokens.length} new tokens, ${events.length} total events`)
-
-    // Step 2: Evaluate each new token for potential buy
+    // 2. Evaluate new tokens for entry
     for (const event of newTokens) {
-      if (openPositions.size >= MAX_OPEN_POSITIONS) {
-        console.log('[trader] Max positions reached — skipping new tokens')
-        break
-      }
+      if (openPositions.size >= MAX_OPEN_POSITIONS) break
       if (openPositions.has(event.tokenAddress)) continue
-
-      await evaluateAndMaybeBuy(agentId, event.tokenAddress, agent.owner_wallet)
+      await evaluateAndMaybeBuy(agentId, agent, event.tokenAddress)
     }
 
-    // Step 3: Check existing positions for exit signals
+    // 3. Check existing positions for exit
     for (const [tokenAddress, position] of openPositions) {
-      await checkAndMaybeExit(agentId, tokenAddress, position, agent.owner_wallet)
+      await checkAndMaybeExit(agentId, agent, tokenAddress, position)
     }
 
-    // Step 4: Update leaderboard
-    const totalPnl = Array.from(openPositions.values()).reduce((sum) => sum, 0)
+    // 4. Update leaderboard
+    const totalPnl = Array.from(openPositions.values())
+      .reduce((sum) => sum, 0)
     await upsertLeaderboard({
-      agent_id: agentId,
-      total_pnl_bnb: totalPnl,
-      tokens_created: 0,
+      agent_id:        agentId,
+      total_pnl_bnb:   totalPnl,
+      tokens_created:  0,
       trades_executed: openPositions.size,
-    })
+    }).catch(() => null)
 
-    console.log('[trader] Cycle complete.')
+    recordSuccess(agentId)
+    console.log(`[trader:${agent.name}] Cycle complete`)
+
   } catch (err) {
-    console.error('[trader] Error:', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[trader:${agent.name}] Error:`, msg)
+    await recordFailure(agentId, 'trader_cycle', msg)
+    await logAgentAction({ agent_id: agentId, action: 'error', reasoning: msg, outcome: 'failed' })
     await updateAgentStatus(agentId, 'error')
     return
   }
@@ -108,211 +98,177 @@ export async function runTraderAgent(agentId: string): Promise<void> {
   await updateAgentStatus(agentId, 'idle')
 }
 
-// ── Evaluate a token and decide whether to buy ────────────
+// ── Evaluate new token for buy ────────────────────────────
 
 async function evaluateAndMaybeBuy(
   agentId: string,
-  tokenAddress: string,
-  ownerWallet: string
+  agent:   Awaited<ReturnType<typeof getAgentById>>,
+  tokenAddress: string
 ): Promise<void> {
-  console.log(`[trader] Evaluating token: ${tokenAddress}`)
-
   try {
-    // Get token state
     const [tokenInfo, taxInfo] = await Promise.all([
       getTokenInfo(tokenAddress),
       getTaxInfo(tokenAddress).catch(() => null),
     ])
 
     // Only trade V2 tokens
-    if (tokenInfo.version !== 2) {
-      console.log(`[trader] Skipping V1 token: ${tokenAddress}`)
-      return
-    }
+    if (tokenInfo.version !== 2) return
 
-    // Check bonding curve fill %
     const bondingPct = tokenInfo.maxFunds > 0n
       ? Number((tokenInfo.funds * 100n) / tokenInfo.maxFunds)
       : 0
-    if (bondingPct > MAX_BONDING_CURVE_PCT) {
-      console.log(`[trader] Bonding curve too full (${bondingPct}%) — skipping`)
+
+    // Skip if bonding curve already >40% filled
+    if (bondingPct > 40) {
+      await logAgentAction({ agent_id: agentId, action: 'skip', token_address: tokenAddress, reasoning: `Bonding ${bondingPct}% too full`, outcome: 'skipped' })
       return
     }
 
-    // Check tax config — skip if creator takes > 60%
+    // Skip if creator tax too high
     if (taxInfo && Number(taxInfo.rateFounder) > 60) {
-      console.log(`[trader] Creator rate too high (${taxInfo.rateFounder}%) — skipping`)
+      await logAgentAction({ agent_id: agentId, action: 'skip', token_address: tokenAddress, reasoning: `Creator tax ${taxInfo.rateFounder}% too high`, outcome: 'skipped' })
       return
     }
 
-    // Ask Kimi K2 for buy decision
-    const decision = await kimiTradeDecision('buy', {
+    // Ask Kimi K2
+    const decision = await kimiDecide('buy', {
       tokenAddress,
-      bondingCurvePct: bondingPct,
-      lastPriceWei: tokenInfo.lastPrice.toString(),
-      taxFounderRate: taxInfo ? Number(taxInfo.rateFounder) : 0,
+      bondingCurvePct:   bondingPct,
+      lastPriceWei:      tokenInfo.lastPrice.toString(),
+      taxFounderRate:    taxInfo ? Number(taxInfo.rateFounder) : 0,
       openPositionCount: openPositions.size,
     })
 
     if (!decision.shouldAct) {
-      console.log(`[trader] Kimi K2 says skip: ${decision.reasoning}`)
+      await logAgentAction({ agent_id: agentId, action: 'skip', token_address: tokenAddress, reasoning: decision.reasoning, outcome: 'skipped' })
       return
     }
 
-    // Get buy quote
-    const fundsBnb = Math.min(decision.amountBnb ?? 0.05, MAX_POSITION_BNB).toString()
-    const quote = await quoteBuy(tokenAddress, fundsBnb)
-    console.log(`[trader] Buy quote: ${ethers.formatEther(quote.tokenAmount)} tokens for ${fundsBnb} BNB`)
-
     // Execute buy
-    const buyResult = await buyToken(tokenAddress, fundsBnb)
-    console.log(`[trader] Bought! tx: ${buyResult.txHash}`)
+    const fundsBnb = Math.min(decision.amountBnb ?? 0.05, MAX_POSITION_BNB).toString()
+    await quoteBuy(tokenAddress, fundsBnb)  // validate first
+    const bought = await buyToken(tokenAddress, fundsBnb)
 
-    // Record trade in Supabase
     const trade = await recordTrade({
-      agent_id: agentId,
-      token_address: tokenAddress,
-      action: 'buy',
-      amount_wei: ethers.parseEther(fundsBnb).toString(),
-      token_amount_wei: buyResult.tokenAmount.toString(),
-      tx_hash: buyResult.txHash,
+      agent_id:         agentId,
+      token_address:    tokenAddress,
+      action:           'buy',
+      amount_wei:       ethers.parseEther(fundsBnb).toString(),
+      token_amount_wei: bought.tokenAmount.toString(),
+      tx_hash:          bought.txHash,
     })
 
-    // Track open position
     openPositions.set(tokenAddress, {
       tokenAddress,
-      entryFundsBnb: parseFloat(fundsBnb),
-      tokenAmountWei: buyResult.tokenAmount.toString(),
-      entryTradeId: trade.id,
-      entryTimestamp: Date.now(),
+      entryFundsBnb:   parseFloat(fundsBnb),
+      tokenAmountWei:  bought.tokenAmount.toString(),
+      entryTradeId:    trade.id,
+      entryTimestamp:  Date.now(),
     })
 
-    console.log(`[trader] Position opened: ${tokenAddress} — ${fundsBnb} BNB`)
+    await logTradeExecuted(agentId, agent.owner_wallet, 'buy', tokenAddress, parseFloat(fundsBnb), decision.reasoning)
+    console.log(`[trader:${agent.name}] Bought ${tokenAddress} for ${fundsBnb} BNB — ${decision.reasoning}`)
+
   } catch (err) {
-    console.warn(`[trader] Failed to evaluate ${tokenAddress}:`, err)
+    console.warn(`[trader] Buy eval failed for ${tokenAddress}:`, (err as Error).message)
   }
 }
 
-// ── Check an existing position for exit ───────────────────
+// ── Check existing position for exit ─────────────────────
 
 async function checkAndMaybeExit(
-  agentId: string,
+  agentId:  string,
+  agent:    Awaited<ReturnType<typeof getAgentById>>,
   tokenAddress: string,
-  position: Position,
-  ownerWallet: string
+  position: Position
 ): Promise<void> {
   try {
-    const quote = await quoteSell(tokenAddress, position.tokenAmountWei)
-    const returnBnb = parseFloat(ethers.formatEther(quote.fundsReturn))
-    const pnlPct = ((returnBnb - position.entryFundsBnb) / position.entryFundsBnb) * 100
+    const quote      = await quoteSell(tokenAddress, position.tokenAmountWei)
+    const returnBnb  = parseFloat(ethers.formatEther(quote.fundsReturn))
+    const pnlPct     = ((returnBnb - position.entryFundsBnb) / position.entryFundsBnb) * 100
 
-    console.log(`[trader] Position ${tokenAddress}: P&L ${pnlPct.toFixed(1)}%`)
-
-    const shouldExit =
-      pnlPct >= PROFIT_TARGET_PCT ||
-      pnlPct <= -STOP_LOSS_PCT
-
+    const shouldExit = pnlPct >= PROFIT_TARGET_PCT || pnlPct <= -STOP_LOSS_PCT
     if (!shouldExit) return
 
-    const reason = pnlPct >= PROFIT_TARGET_PCT ? 'profit target hit' : 'stop loss triggered'
-    console.log(`[trader] Exiting position (${reason}): ${tokenAddress}`)
+    const reason = pnlPct >= PROFIT_TARGET_PCT ? `Profit target hit (+${pnlPct.toFixed(1)}%)` : `Stop loss triggered (${pnlPct.toFixed(1)}%)`
+    console.log(`[trader:${agent.name}] Exiting ${tokenAddress}: ${reason}`)
 
     // Execute sell
-    const sellResult = await sellToken(tokenAddress, position.tokenAmountWei)
-    console.log(`[trader] Sold! tx: ${sellResult.txHash}`)
-
-    // Record trade and P&L
+    const sold  = await sellToken(tokenAddress, position.tokenAmountWei)
     const trade = await recordTrade({
-      agent_id: agentId,
-      token_address: tokenAddress,
-      action: 'sell',
-      amount_wei: position.tokenAmountWei,
+      agent_id:         agentId,
+      token_address:    tokenAddress,
+      action:           'sell',
+      amount_wei:       position.tokenAmountWei,
       token_amount_wei: quote.fundsReturn.toString(),
-      tx_hash: sellResult.txHash,
+      tx_hash:          sold.txHash,
     })
 
     const pnlBnb = returnBnb - position.entryFundsBnb
     await recordPnl(trade.id, pnlBnb)
 
-    // Route profit to owner wallet if positive
+    // Route profit to owner
     if (pnlBnb > 0) {
       const profitWei = ethers.parseEther(pnlBnb.toFixed(8)).toString()
-      const txHash = await sendBnb(ownerWallet, profitWei)
-      console.log(`[trader] Profit ${pnlBnb.toFixed(4)} BNB sent to owner. tx: ${txHash}`)
+      const txHash    = await sendBnb(agent.owner_wallet, profitWei)
+      await logProfitSent(agentId, agent.owner_wallet, pnlBnb, txHash)
+      console.log(`[trader:${agent.name}] Profit ${pnlBnb.toFixed(4)} BNB → owner. tx: ${txHash}`)
     }
 
+    await logTradeExecuted(agentId, agent.owner_wallet, 'sell', tokenAddress, returnBnb, reason, pnlBnb)
     openPositions.delete(tokenAddress)
+
   } catch (err) {
-    console.warn(`[trader] Exit check failed for ${tokenAddress}:`, err)
+    console.warn(`[trader] Exit check failed for ${tokenAddress}:`, (err as Error).message)
   }
 }
 
 // ── Kimi K2: trade decision ───────────────────────────────
 
-interface TradeContext {
-  tokenAddress: string
-  bondingCurvePct: number
-  lastPriceWei: string
-  taxFounderRate: number
-  openPositionCount: number
-}
-
 interface TradeDecision {
-  shouldAct: boolean
+  shouldAct:  boolean
   amountBnb?: number
-  reasoning: string
+  reasoning:  string
 }
 
-async function kimiTradeDecision(
-  action: 'buy' | 'sell',
-  context: TradeContext
+async function kimiDecide(
+  action:  'buy' | 'sell',
+  context: { tokenAddress: string; bondingCurvePct: number; lastPriceWei: string; taxFounderRate: number; openPositionCount: number }
 ): Promise<TradeDecision> {
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: TRADER_AGENT_SYSTEM_PROMPT },
     {
       role: 'user',
-      content: `
-Token: ${context.tokenAddress}
-Action to evaluate: ${action}
+      content: `Token: ${context.tokenAddress}
+Action: ${action}
 Bonding curve filled: ${context.bondingCurvePct}%
 Last price (wei): ${context.lastPriceWei}
 Creator tax rate: ${context.taxFounderRate}%
 Open positions: ${context.openPositionCount}/${MAX_OPEN_POSITIONS}
 
-Should I ${action} this token? Respond ONLY with JSON:
-{"shouldAct":true|false,"amountBnb":<number if buy>,"reasoning":"<one sentence>"}
-      `.trim(),
+Should I ${action}? JSON only: {"shouldAct":true|false,"amountBnb":<number if buy>,"reasoning":"<one sentence>"}`,
     },
   ]
 
-  const response = await kimiChat({
-    messages,
-    tools: FOURMEME_TOOLS,
-    temperature: 0.6,
-    maxTokens: 256,
-  })
+  const response = await kimiChat({ messages, tools: FOURMEME_TOOLS, temperature: 0.5, maxTokens: 200 })
 
   try {
-    return JSON.parse(response.content.trim()) as TradeDecision
+    const clean = response.content.trim().replace(/```json\n?/g,'').replace(/```\n?/g,'')
+    return JSON.parse(clean) as TradeDecision
   } catch {
-    return { shouldAct: false, reasoning: 'Parse error — defaulting to no action' }
+    return { shouldAct: false, reasoning: 'JSON parse error — skipping' }
   }
 }
 
-// ── EIP-8004 registration ─────────────────────────────────
+// ── EIP-8004 identity ─────────────────────────────────────
 
-async function ensureAgentIdentity(
-  agentId: string,
-  agentName: string,
-  walletAddress: string
-): Promise<void> {
+async function ensureAgentIdentity(agentId: string, name: string, wallet: string): Promise<void> {
   try {
-    const balance = await getAgentIdentityBalance(walletAddress)
+    const balance = await getAgentIdentityBalance(wallet)
     if (balance > 0) return
-    console.log('[trader] Registering EIP-8004 identity...')
-    const result = await registerAgentIdentity(agentName, '', `Sixteen trader agent — ${agentName}`)
+    const result = await registerAgentIdentity(name, '', `Sixteen trader agent — ${name}`)
     console.log(`[trader] EIP-8004 registered — tokenId: ${result.tokenId}`)
-  } catch (err) {
-    console.warn('[trader] EIP-8004 registration failed (non-fatal):', err)
+  } catch {
+    // non-fatal
   }
 }
