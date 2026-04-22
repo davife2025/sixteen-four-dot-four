@@ -19,7 +19,7 @@ const TAX_TOKEN_ABI = [
 ]
 
 interface Props {
-  tokenAddress: string
+  tokenAddress:  string
   creatorWallet: string
 }
 
@@ -36,13 +36,13 @@ export function CreatorEarnings({ tokenAddress, creatorWallet }: Props) {
   useEffect(() => {
     async function load() {
       try {
-        const provider  = new ethers.JsonRpcProvider('https://data-seed-prebsc-1-s1.binance.org:8545')
-        const contract  = new ethers.Contract(tokenAddress, TAX_TOKEN_ABI, provider)
+        const provider = new ethers.JsonRpcProvider('https://data-seed-prebsc-1-s1.binance.org:8545')
+        const contract = new ethers.Contract(tokenAddress, TAX_TOKEN_ABI, provider)
 
         const [claimableWei, claimedWei, feeRateRaw] = await Promise.all([
           (contract['claimableFee'] as (a: string) => Promise<bigint>)(creatorWallet),
           (contract['claimedFee']   as (a: string) => Promise<bigint>)(creatorWallet),
-          contract['feeRate']() as Promise<bigint>,
+          (contract['feeRate'] as () => Promise<unknown>)() as Promise<bigint>,
         ])
 
         setClaimable(parseFloat(ethers.formatEther(claimableWei)).toFixed(6))
@@ -59,8 +59,8 @@ export function CreatorEarnings({ tokenAddress, creatorWallet }: Props) {
   }, [tokenAddress, creatorWallet])
 
   async function handleClaim() {
-    if (!wallet.connected) { await wallet.connect(); return }
-    if (wallet.wrongNetwork) { await wallet.switchNetwork(); return }
+    if (!wallet.connected)    { await wallet.connect();       return }
+    if (wallet.wrongNetwork)  { await wallet.switchNetwork(); return }
 
     setLoading(true)
     setError(null)
@@ -73,7 +73,6 @@ export function CreatorEarnings({ tokenAddress, creatorWallet }: Props) {
       const tx       = await (contract['claimFee'] as () => Promise<ethers.ContractTransactionResponse>)()
       setTxHash(tx.hash)
       await tx.wait()
-      // Refresh claimable
       setClaimable('0.000000')
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Claim failed'
