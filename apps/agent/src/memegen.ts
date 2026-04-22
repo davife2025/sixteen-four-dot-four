@@ -13,7 +13,7 @@
 import axios from 'axios'
 import { kimiChat } from '@sixteen/ai'
 import { uploadMemeImage } from '@sixteen/blockchain'
-import type { ChatCompletionMessageParam } from 'openai/resources/chat'
+import type { ChatCompletionMessageParam } from 'openai/resources'
 
 const HF_BASE  = 'https://api-inference.huggingface.co/models'
 const HF_MODEL = 'black-forest-labs/FLUX.1-schnell'

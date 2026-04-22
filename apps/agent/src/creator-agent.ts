@@ -31,7 +31,7 @@ import {
   logAgentAction, logTokenLaunched,
 }                                                        from './logger'
 import { recordSuccess, recordFailure }                  from './monitor'
-import type { ChatCompletionMessageParam }               from 'openai/resources/chat'
+import type { ChatCompletionMessageParam }               from 'openai/resources'
 
 const VIRALITY_THRESHOLD = 60
 
@@ -107,24 +107,24 @@ export async function runCreatorAgent(agentId: string): Promise<void> {
 
     // 6. Record in Supabase
     await insertMemeToken({
-      token_address:    result.tokenAddress,
-      name:             concept.tokenName,
-      symbol:           concept.symbol,
-      description:      concept.description,
-      image_url:        fourMemeImageUrl,
-      video_url:        videoUrl,
-      asset_type:       concept.assetType,
-      label:            concept.label,
-      creator_agent_id: agentId,
-      creator_wallet:   agent.wallet_address,
-      tax_fee_rate:     5,
-      burn_rate:        10,
-      divide_rate:      40,
-      liquidity_rate:   10,
-      recipient_rate:   40,
-      virality_score:   virality.score,
-      create_tx_hash:   result.txHash,
-    })
+  token_address:    result.tokenAddress,
+  name:             concept.tokenName,
+  symbol:           concept.symbol,
+  description:      concept.description,
+  image_url:        fourMemeImageUrl,
+  ...(videoUrl !== undefined && { video_url: videoUrl }),
+  asset_type:       concept.assetType,
+  label:            concept.label,
+  creator_agent_id: agentId,
+  creator_wallet:   agent.wallet_address,
+  tax_fee_rate:     5,
+  burn_rate:        10,
+  divide_rate:      40,
+  liquidity_rate:   10,
+  recipient_rate:   40,
+  virality_score:   virality.score,
+  create_tx_hash:   result.txHash,
+})
 
     // Record pre-sale buy
     await recordTrade({

@@ -6,7 +6,7 @@
 // ============================================================
 
 import { kimiChat } from '@sixteen/ai'
-import type { ChatCompletionMessageParam } from 'openai/resources/chat'
+import type { ChatCompletionMessageParam } from 'openai/resources'
 
 export interface ViralityResult {
   score: number           // 0-100

@@ -44,7 +44,6 @@ export async function recordFailure(
   const count = (failureCounts.get(agentId) ?? 0) + 1
   failureCounts.set(agentId, count)
 
-  // exactOptionalPropertyTypes fix: only pass context if defined
   await logAgentError({
     agent_id:   agentId,
     error_type: errorType,
@@ -57,6 +56,7 @@ export async function recordFailure(
     await updateAgentStatus(agentId, 'error')
     failureCounts.set(agentId, 0)
   }
+}
 
 
 export async function runHealthCheck(): Promise<{
@@ -101,4 +101,3 @@ export async function runHealthCheck(): Promise<{
 
 
 
-}

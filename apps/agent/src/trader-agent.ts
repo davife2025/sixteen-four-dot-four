@@ -26,7 +26,7 @@ import {
 } from './logger'
 import { recordSuccess, recordFailure } from './monitor'
 import { ethers }                        from 'ethers'
-import type { ChatCompletionMessageParam } from 'openai/resources/chat'
+import type { ChatCompletionMessageParam } from 'openai/resources'
 
 const MAX_POSITION_BNB   = 0.2
 const MAX_OPEN_POSITIONS = 5

@@ -10,7 +10,7 @@
 
 import axios from 'axios'
 import { kimiChat } from '@sixteen/ai'
-import type { ChatCompletionMessageParam } from 'openai/resources/chat'
+import type { ChatCompletionMessageParam } from 'openai/resources'
 
 export interface TrendSignal {
   topic:          string
