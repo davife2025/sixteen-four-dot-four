@@ -14,8 +14,8 @@ export async function GET(req: NextRequest) {
   const roundId = searchParams.get('round_id')
 
   try {
-    const db   = createServerClient()
-    let query  = db
+    const db  = createServerClient()
+    let query = db
       .from('predictions')
       .select(`
         id, bettor_wallet, stake_bnb, settled, payout_bnb, created_at,
@@ -32,8 +32,10 @@ export async function GET(req: NextRequest) {
     // Aggregate stakes per agent for this round
     const stakeByAgent: Record<string, number> = {}
     for (const p of data ?? []) {
-      const pred = p as { agents: { id: string } | null; stake_bnb: number }
-      const aid = pred.agents?.id ?? 'unknown'
+      const pred = p as { agents: { id: string }[] | null; stake_bnb: number }
+      const aid = Array.isArray(pred.agents) && pred.agents.length > 0
+        ? pred.agents[0].id
+        : 'unknown'
       stakeByAgent[aid] = (stakeByAgent[aid] ?? 0) + pred.stake_bnb
     }
 
@@ -50,11 +52,11 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as {
-      round_id: string
+      round_id:      string
       bettor_wallet: string
-      agent_id: string
-      stake_bnb: number
-      tx_hash: string
+      agent_id:      string
+      stake_bnb:     number
+      tx_hash:       string
     }
 
     if (!body.round_id || !body.bettor_wallet || !body.agent_id || !body.stake_bnb || !body.tx_hash) {
