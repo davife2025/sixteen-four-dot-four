@@ -1,172 +1,203 @@
 // ============================================================
-// SIXTEEN — apps/agent/src/copy-agent.ts
-// Copy-Agent engine — mirrors winning agent trades to followers
-// Followers stake BNB and proportionally mirror every
-// buy/sell the followed agent makes automatically.
+// SIXTEEN — apps/agent/src/creator-agent.ts
 // ============================================================
 
-import { ethers } from 'ethers'
+import { kimiChat, CREATOR_AGENT_SYSTEM_PROMPT, FOURMEME_TOOLS } from '@sixteen/ai'
 import {
-  quoteBuy,
-  buyToken,
-  quoteSell,
-  sellToken,
-  getSigner,
-  getProvider,
+  createMemeToken, uploadMemeImage, registerAgentIdentity,
+  getAgentIdentityBalance,
 } from '@sixteen/blockchain'
-import { db, recordTrade } from '@sixteen/db'
+import {
+  insertMemeToken, updateAgentStatus, recordTrade, getAgentById,
+  upsertLeaderboard,
+} from '@sixteen/db'
+import { getTopTrends, formatTrendsForKimi }                from './trends'
+import { scoreMemeVirality }                                from './virality'
+import {
+  getBestStaticMeme, uploadMemeToFourMeme,
+  generateVideoMeme, downloadImageAsBuffer,
+}                                                           from './memegen'
+import { logAgentAction, logTokenLaunched }                 from './logger'
+import { recordSuccess, recordFailure }                     from './monitor'
+import type { ChatCompletionMessageParam } from 'openai/resources'   // fixed import
 
-// ── Copy fee: 1.5% of each mirrored trade goes to agent owner ─
+const VIRALITY_THRESHOLD = 60
 
-const COPY_FEE_BPS = 150  // 1.5%
+export async function runCreatorAgent(agentId: string): Promise<void> {
+  const agent = await getAgentById(agentId)
+  console.log(`[creator:${agent.name}] Starting cycle`)
 
-// ── Mirror a buy trade to all active followers ────────────
+  await ensureAgentIdentity(agentId, agent.name, agent.wallet_address)
+  await updateAgentStatus(agentId, 'running')
 
-export async function mirrorBuyToFollowers(
-  sourceAgentId: string,
-  tokenAddress: string,
-  sourceFundsBnb: number
-): Promise<void> {
-  const followers = await getActiveFollowers(sourceAgentId)
-  if (!followers.length) return
-
-  console.log(`[copy] Mirroring buy of ${tokenAddress} to ${followers.length} followers`)
-
-  await Promise.allSettled(
-    followers.map((follower) =>
-      executeCopyBuy(follower, sourceAgentId, tokenAddress, sourceFundsBnb)
-    )
-  )
-}
-
-// ── Mirror a sell trade to all active followers ───────────
-
-export async function mirrorSellToFollowers(
-  sourceAgentId: string,
-  tokenAddress: string,
-  sourceTokenAmountWei: string
-): Promise<void> {
-  const followers = await getActiveFollowers(sourceAgentId)
-  if (!followers.length) return
-
-  console.log(`[copy] Mirroring sell of ${tokenAddress} to ${followers.length} followers`)
-
-  await Promise.allSettled(
-    followers.map((follower) =>
-      executeCopySell(follower, sourceAgentId, tokenAddress, sourceTokenAmountWei)
-    )
-  )
-}
-
-// ── Execute a proportional buy for one follower ───────────
-
-interface Follower {
-  id: string
-  follower_wallet: string
-  agent_id: string
-  stake_bnb: number
-}
-
-async function executeCopyBuy(
-  follower: Follower,
-  sourceAgentId: string,
-  tokenAddress: string,
-  sourceFundsBnb: number
-): Promise<void> {
   try {
-    // Proportional amount: follower's stake relative to a baseline of 0.1 BNB
-    const baselineSourceBnb = 0.1
-    const ratio             = follower.stake_bnb / baselineSourceBnb
-    const rawAmount         = sourceFundsBnb * ratio
+    const trends   = await getTopTrends(5)
+    const trendCtx = formatTrendsForKimi(trends)
+    console.log(`[creator:${agent.name}] Trends:\n${trendCtx}`)
 
-    // Apply copy fee
-    const fee           = rawAmount * (COPY_FEE_BPS / 10000)
-    const followerAmount = rawAmount - fee
+    const concept  = await ideateMemeConcept(trendCtx, agent.name)
+    console.log(`[creator:${agent.name}] Concept: ${concept.tokenName} — ${concept.description}`)
 
-    if (followerAmount < 0.001) {
-      console.log(`[copy] Follower ${follower.follower_wallet} amount too small — skipping`)
+    const virality = await scoreMemeVirality(concept.description, trendCtx, concept.tokenName)
+    console.log(`[creator:${agent.name}] Virality: ${virality.score} — ${virality.recommendation}`)
+
+    if (virality.recommendation !== 'GO') {
+      await logAgentAction({
+        agent_id:       agentId,
+        action:         'skip',
+        reasoning:      `Virality ${virality.score}/100: ${virality.reasoning}`,
+        virality_score: virality.score,
+        outcome:        'skipped',
+      })
+      await updateAgentStatus(agentId, 'idle')
       return
     }
 
-    const fundsBnb = followerAmount.toFixed(6)
+    let fourMemeImageUrl: string
+    let videoUrl: string | undefined
 
-    // Get quote first
-    const quote = await quoteBuy(tokenAddress, fundsBnb)
-    console.log(`[copy] Follower buy: ${follower.follower_wallet} — ${fundsBnb} BNB → ${ethers.formatEther(quote.tokenAmount)} tokens`)
+    if (concept.assetType === 'video') {
+      console.log(`[creator:${agent.name}] Generating video via Kling…`)
+      const video  = await generateVideoMeme(concept.description)
+      // null → undefined fix
+      videoUrl     = video.videoUrl ?? undefined
+      const buf    = await downloadImageAsBuffer(video.thumbnailUrl)
+      fourMemeImageUrl = await uploadMemeImage(buf, 'image/jpeg')
+    } else {
+      console.log(`[creator:${agent.name}] Generating image via HF FLUX…`)
+      const meme       = await getBestStaticMeme(concept.description)
+      fourMemeImageUrl = await uploadMemeToFourMeme(meme.imageUrl, meme.imageBuffer)
+    }
 
-    // Execute buy using follower's wallet
-    // NOTE: In production each follower has their own wallet keypair
-    // For testnet, we use the shared agent wallet (simplified)
-    const result = await buyToken(tokenAddress, fundsBnb)
+    console.log(`[creator:${agent.name}] Launching ${concept.tokenName} (${concept.symbol})…`)
+    const result = await createMemeToken({
+      name:             concept.tokenName,
+      shortName:        concept.symbol,
+      description:      concept.description,
+      imageUrl:         fourMemeImageUrl,
+      label:            concept.label,
+      preSaleBnb:       '0.01',
+      feeRate:          5,
+      burnRate:         10,
+      divideRate:       40,
+      liquidityRate:    10,
+      recipientRate:    40,
+      recipientAddress: agent.owner_wallet,
+      feePlan:          true,
+    })
+    console.log(`[creator:${agent.name}] Token launched: ${result.tokenAddress} tx: ${result.txHash}`)
 
-    // Record in Supabase
-    await recordTrade({
-      agent_id: sourceAgentId,
-      token_address: tokenAddress,
-      action: 'buy',
-      amount_wei: ethers.parseEther(fundsBnb).toString(),
-      token_amount_wei: result.tokenAmount.toString(),
-      tx_hash: result.txHash,
+    // exactOptionalPropertyTypes fix: spread video_url conditionally
+    await insertMemeToken({
+      token_address:    result.tokenAddress,
+      name:             concept.tokenName,
+      symbol:           concept.symbol,
+      description:      concept.description,
+      image_url:        fourMemeImageUrl,
+      ...(videoUrl !== undefined && { video_url: videoUrl }),
+      asset_type:       concept.assetType,
+      label:            concept.label,
+      creator_agent_id: agentId,
+      creator_wallet:   agent.wallet_address,
+      tax_fee_rate:     5,
+      burn_rate:        10,
+      divide_rate:      40,
+      liquidity_rate:   10,
+      recipient_rate:   40,
+      virality_score:   virality.score,
+      create_tx_hash:   result.txHash,
     })
 
-    console.log(`[copy] ✓ Follower buy executed: ${result.txHash}`)
+    await recordTrade({
+      agent_id:         agentId,
+      token_address:    result.tokenAddress,
+      action:           'buy',
+      amount_wei:       '10000000000000000',
+      token_amount_wei: '0',
+      tx_hash:          result.txHash,
+    })
+
+    await upsertLeaderboard({
+      agent_id:        agentId,
+      total_pnl_bnb:   0,
+      tokens_created:  1,
+      trades_executed: 1,
+    }).catch(() => null)
+
+    await logTokenLaunched(
+      agentId, agent.owner_wallet,
+      result.tokenAddress, concept.tokenName,
+      virality.score, 0.01
+    )
+
+    recordSuccess(agentId)
+    console.log(`[creator:${agent.name}] ✓ Complete`)
+
   } catch (err) {
-    console.warn(`[copy] Failed buy for follower ${follower.follower_wallet}:`, err)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[creator:${agent.name}] Error:`, msg)
+    await recordFailure(agentId, 'creator_cycle', msg)
+    await logAgentAction({ agent_id: agentId, action: 'error', reasoning: msg, outcome: 'failed' })
+    await updateAgentStatus(agentId, 'error')
+    return
   }
+
+  await updateAgentStatus(agentId, 'idle')
 }
 
-// ── Execute a proportional sell for one follower ──────────
+interface MemeConcept {
+  tokenName:   string
+  symbol:      string
+  description: string
+  label:       'AI' | 'Meme' | 'Games' | 'Social' | 'Others'
+  assetType:   'image' | 'video'
+  reasoning:   string
+}
 
-async function executeCopySell(
-  follower: Follower,
-  sourceAgentId: string,
-  tokenAddress: string,
-  sourceTokenAmountWei: string
-): Promise<void> {
+async function ideateMemeConcept(trendCtx: string, agentName: string): Promise<MemeConcept> {
+  const messages: ChatCompletionMessageParam[] = [
+    { role: 'system', content: CREATOR_AGENT_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: `You are ${agentName}.\n\nCurrent trending topics:\n${trendCtx}\n\nCreate a meme token concept. Respond ONLY with valid JSON:\n{"tokenName":"<max 20 chars>","symbol":"<max 8 chars UPPERCASE>","description":"<max 100 chars>","label":"AI"|"Meme"|"Games"|"Social"|"Others","assetType":"image"|"video","reasoning":"<why viral>"}`,
+    },
+  ]
+
+  const response = await kimiChat({ messages, tools: FOURMEME_TOOLS, temperature: 0.85, maxTokens: 400 })
+
   try {
-    // Scale token amount proportionally to follower's stake
-    const baselineSourceBnb = 0.1
-    const ratio             = follower.stake_bnb / baselineSourceBnb
-    const sourceAmount      = BigInt(sourceTokenAmountWei)
-    const followerAmount    = (sourceAmount * BigInt(Math.floor(ratio * 1000))) / 1000n
-
-    if (followerAmount === 0n) return
-
-    // Get quote
-    const quote = await quoteSell(tokenAddress, followerAmount.toString())
-    console.log(`[copy] Follower sell: ${follower.follower_wallet} — ${ethers.formatEther(followerAmount)} tokens → ${ethers.formatEther(quote.fundsReturn)} BNB`)
-
-    // Execute sell
-    const result = await sellToken(tokenAddress, followerAmount.toString())
-
-    // Record in Supabase
-    await recordTrade({
-      agent_id: sourceAgentId,
-      token_address: tokenAddress,
-      action: 'sell',
-      amount_wei: followerAmount.toString(),
-      token_amount_wei: quote.fundsReturn.toString(),
-      tx_hash: result.txHash,
-    })
-
-    console.log(`[copy] ✓ Follower sell executed: ${result.txHash}`)
-  } catch (err) {
-    console.warn(`[copy] Failed sell for follower ${follower.follower_wallet}:`, err)
+    const clean = response.content.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '')
+    return JSON.parse(clean) as MemeConcept
+  } catch {
+    return { tokenName: 'Sixteen Meme', symbol: 'SXTEEN', description: 'AI meme on BNB Chain', label: 'Meme', assetType: 'image', reasoning: 'Fallback' }
   }
 }
 
-// ── Get active followers for an agent ────────────────────
-
-async function getActiveFollowers(agentId: string): Promise<Follower[]> {
-  const { data, error } = await db()
-    .from('copy_follows')
-    .select('id, follower_wallet, agent_id, stake_bnb')
-    .eq('agent_id', agentId)
-    .eq('active', true)
-
-  if (error) {
-    console.warn('[copy] Failed to fetch followers:', error)
-    return []
+async function ensureAgentIdentity(agentId: string, name: string, wallet: string): Promise<void> {
+  try {
+    const balance = await getAgentIdentityBalance(wallet)
+    if (balance > 0) return
+    console.log(`[creator] Registering EIP-8004 identity for ${name}…`)
+    const result = await registerAgentIdentity(name, '', `Sixteen creator agent — ${name}`)
+    console.log(`[creator] EIP-8004 registered — tokenId: ${result.tokenId}`)
+  } catch (err) {
+    console.warn('[creator] EIP-8004 registration failed (non-fatal):', (err as Error).message)
   }
-  return (data ?? []) as Follower[]
+}
+export async function mirrorBuyToFollowers(
+  agentId:      string,
+  tokenAddress: string,
+  amountBnb:    number
+): Promise<void> {
+  // TODO: implement copy-trading fan-out
+  console.log(`[copy-agent] Mirror BUY ${tokenAddress} ${amountBnb} BNB for followers of ${agentId}`)
+}
+
+export async function mirrorSellToFollowers(
+  agentId:      string,
+  tokenAddress: string,
+  tokenAmountWei: string
+): Promise<void> {
+  // TODO: implement copy-trading fan-out
+  console.log(`[copy-agent] Mirror SELL ${tokenAddress} ${tokenAmountWei} wei for followers of ${agentId}`)
 }

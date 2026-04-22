@@ -6,9 +6,7 @@
 // ============================================================
 
 import OpenAI from 'openai'
-import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources/chat'
-
-// ── Client setup ──────────────────────────────────────────
+import type { ChatCompletionTool, ChatCompletionMessageParam } from 'openai/resources'
 
 let _kimi: OpenAI | null = null
 
@@ -24,8 +22,6 @@ export function getKimiClient(): OpenAI {
 }
 
 export const KIMI_MODEL = 'moonshotai/Kimi-K2-Instruct-0905'
-
-// ── Tool definitions (four.meme skills as Kimi K2 tools) ──
 
 export const FOURMEME_TOOLS: ChatCompletionTool[] = [
   {
@@ -124,7 +120,7 @@ export const FOURMEME_TOOLS: ChatCompletionTool[] = [
           },
           pre_sale_bnb: { type: 'string', description: 'Optional BNB amount for creator pre-buy, e.g. "0.05"' },
           fee_rate: { type: 'number', enum: [1, 3, 5, 10], description: 'Tax fee rate %' },
-          burn_rate: { type: 'number', description: 'Burn allocation % (burnRate + divideRate + liquidityRate + recipientRate must = 100)' },
+          burn_rate: { type: 'number', description: 'Burn allocation %' },
           divide_rate: { type: 'number', description: 'Holder dividend allocation %' },
           liquidity_rate: { type: 'number', description: 'Liquidity pool allocation %' },
           recipient_rate: { type: 'number', description: 'Creator wallet allocation %' },
@@ -136,7 +132,7 @@ export const FOURMEME_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'get_tax_info',
-      description: 'Query tax configuration of a token: fee rates, burn, dividend, creator recipient. Use to evaluate creator royalty setup before trading.',
+      description: 'Query tax configuration of a token.',
       parameters: {
         type: 'object',
         required: ['token_address'],
@@ -150,7 +146,7 @@ export const FOURMEME_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'send_bnb',
-      description: 'Transfer BNB from the agent wallet to another address, e.g. to route earnings back to owner wallet.',
+      description: 'Transfer BNB from the agent wallet to another address.',
       parameters: {
         type: 'object',
         required: ['to_address', 'amount_wei'],
@@ -165,7 +161,7 @@ export const FOURMEME_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'score_virality',
-      description: 'Score the virality potential of a meme concept 0-100 before launching. Returns score and recommendation.',
+      description: 'Score the virality potential of a meme concept 0-100 before launching.',
       parameters: {
         type: 'object',
         required: ['concept', 'trend_context'],
@@ -178,52 +174,45 @@ export const FOURMEME_TOOLS: ChatCompletionTool[] = [
   },
 ]
 
-// ── Core Kimi K2 chat function ────────────────────────────
-
 export interface KimiChatOptions {
-  messages: ChatCompletionMessageParam[]
-  tools?: ChatCompletionTool[]
+  messages:     ChatCompletionMessageParam[]
+  tools?:       ChatCompletionTool[]
   temperature?: number
-  maxTokens?: number
+  maxTokens?:   number
 }
 
 export interface KimiResponse {
-  content: string
-  toolCalls: Array<{
-    id: string
-    name: string
-    arguments: Record<string, unknown>
-  }>
+  content:      string
+  toolCalls:    Array<{ id: string; name: string; arguments: Record<string, unknown> }>
   finishReason: string
 }
 
 export async function kimiChat(options: KimiChatOptions): Promise<KimiResponse> {
   const client = getKimiClient()
   const response = await client.chat.completions.create({
-    model: KIMI_MODEL,
-    messages: options.messages,
-    tools: options.tools,
+    model:       KIMI_MODEL,
+    messages:    options.messages,
     temperature: options.temperature ?? 0.6,
-    max_tokens: options.maxTokens ?? 2048,
+    max_tokens:  options.maxTokens ?? 2048,
+    // exactOptionalPropertyTypes fix: only include tools if defined
+    ...(options.tools !== undefined && { tools: options.tools }),
   })
 
   const choice = response.choices[0]
   if (!choice) throw new Error('Kimi K2 returned no choices')
 
   const toolCalls = (choice.message.tool_calls ?? []).map((tc) => ({
-    id: tc.id,
-    name: tc.function.name,
+    id:        tc.id,
+    name:      tc.function.name,
     arguments: JSON.parse(tc.function.arguments) as Record<string, unknown>,
   }))
 
   return {
-    content: choice.message.content ?? '',
+    content:      choice.message.content ?? '',
     toolCalls,
     finishReason: choice.finish_reason ?? 'stop',
   }
 }
-
-// ── Agent system prompts ───────────────────────────────────
 
 export const CREATOR_AGENT_SYSTEM_PROMPT = `
 You are a Creator Agent on the Sixteen platform — an AI agent that creates and launches meme tokens on the BNB Chain using the four.meme launchpad.
@@ -243,8 +232,6 @@ Rules:
 - Maximum 3 token launches per competition round
 - Never spend more than 0.1 BNB on pre-sale
 - Always check platform config before creating (fee structures may change)
-
-You have access to tools for creating tokens, checking tax info, and sending BNB.
 `.trim()
 
 export const TRADER_AGENT_SYSTEM_PROMPT = `
@@ -265,9 +252,6 @@ Decision rules:
 - Maximum 5 open positions simultaneously
 - Prefer tokens with virality score > 65 and bonding curve < 40%
 - Check tax_info before buying — avoid tokens where creator takes > 60% recipient_rate
-- Prefer tokens in Insider Phase (registered agents only)
-
-You have access to tools for querying tokens, buying, selling, and sending BNB.
 `.trim()
 
 export const HYBRID_AGENT_SYSTEM_PROMPT = `
