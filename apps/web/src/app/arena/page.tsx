@@ -4,6 +4,13 @@ import { ArenaLive } from '@/components/arena/ArenaLive'
 export const revalidate = 0
 export const metadata = { title: 'Arena | Sixteen' }
 
+function flattenAgent(agents: any): { name: string; type: string } | null {
+  if (!agents) return null
+  const a = Array.isArray(agents) ? agents[0] : agents
+  if (!a) return null
+  return { name: a.name ?? '', type: a.type ?? '' }
+}
+
 async function getData() {
   const db = createServerClient()
   const [roundRes, agentsRes, lbRes, tradesRes, logsRes] = await Promise.all([
@@ -29,11 +36,11 @@ async function getData() {
       .limit(30),
   ])
   return {
-    round:     roundRes.data?.[0]  ?? null,
-    agents:    agentsRes.data      ?? [],
-    leaderboard: lbRes.data        ?? [],
-    trades:    tradesRes.data      ?? [],
-    logs:      logsRes.data        ?? [],
+    round:       roundRes.data?.[0] ?? null,
+    agents:      agentsRes.data     ?? [],
+    leaderboard: (lbRes.data        ?? []).map((r: any) => ({ ...r, agents: flattenAgent(r.agents) })),
+    trades:      (tradesRes.data    ?? []).map((r: any) => ({ ...r, agents: flattenAgent(r.agents) })),
+    logs:        (logsRes.data      ?? []).map((r: any) => ({ ...r, agents: flattenAgent(r.agents) })),
   }
 }
 
