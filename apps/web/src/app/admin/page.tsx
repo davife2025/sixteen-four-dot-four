@@ -15,10 +15,15 @@ async function getData() {
     db.from('platform_config').select('key, value, updated_at'),
   ])
   return {
-    agents:  agentsRes.status  === 'fulfilled' ? (agentsRes.value.data  ?? []) : [],
-    rounds:  roundsRes.status  === 'fulfilled' ? (roundsRes.value.data  ?? []) : [],
-    errors:  errorsRes.status  === 'fulfilled' ? (errorsRes.value.data  ?? []) : [],
-    config:  configRes.status  === 'fulfilled' ? (configRes.value.data  ?? []) : [],
+    agents: agentsRes.status === 'fulfilled' ? (agentsRes.value.data ?? []) : [],
+    rounds: roundsRes.status === 'fulfilled' ? (roundsRes.value.data ?? []) : [],
+    errors: errorsRes.status === 'fulfilled'
+      ? (errorsRes.value.data ?? []).map((e: any) => ({
+          ...e,
+          agents: Array.isArray(e.agents) ? e.agents[0] ?? null : e.agents,
+        }))
+      : [],
+    config: configRes.status === 'fulfilled' ? (configRes.value.data ?? []) : [],
   }
 }
 
@@ -45,10 +50,10 @@ export default async function AdminPage() {
       {/* KPIs */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:20 }}>
         {[
-          { label:'Total Agents',  value: agents.length,         color:'var(--t0)'    },
-          { label:'Running',       value: running,                color:'var(--green)' },
-          { label:'Errors',        value: errored,                color: errored>0?'#ff6060':'var(--t3)' },
-          { label:'Active Round',  value: activeRound ? '1':'0', color: activeRound?'var(--yellow)':'var(--t3)' },
+          { label:'Total Agents',  value: agents.length,          color:'var(--t0)'    },
+          { label:'Running',       value: running,                 color:'var(--green)' },
+          { label:'Errors',        value: errored,                 color: errored>0?'#ff6060':'var(--t3)' },
+          { label:'Active Round',  value: activeRound ? '1' : '0', color: activeRound?'var(--yellow)':'var(--t3)' },
         ].map(k => (
           <div key={k.label} className="kpi" style={{ padding:'14px 16px' }}>
             <div className="kpi-val" style={{ fontSize:22, color: k.color }}>{k.value}</div>
