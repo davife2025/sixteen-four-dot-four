@@ -33,9 +33,9 @@ export async function GET(req: NextRequest) {
     const stakeByAgent: Record<string, number> = {}
     for (const p of data ?? []) {
       const pred = p as { agents: { id: string }[] | null; stake_bnb: number }
-      const aid = Array.isArray(pred.agents) && pred.agents.length > 0
-        ? pred.agents[0].id
-        : 'unknown'
+ const aid = Array.isArray(pred.agents) && pred.agents[0]
+  ? pred.agents[0].id ?? 'unknown'
+  : 'unknown'
       stakeByAgent[aid] = (stakeByAgent[aid] ?? 0) + pred.stake_bnb
     }
 
